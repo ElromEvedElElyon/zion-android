@@ -1,0 +1,70 @@
+name: Build Android APK/AAB
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            python3-pip \
+            autoconf \
+            libtool \
+            pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo5 \
+            cmake \
+            libffi-dev \
+            libssl-dev \
+            automake \
+            openjdk-17-jdk-headless
+
+      - name: Install Buildozer and Cython
+        run: |
+          pip install --upgrade pip
+          pip install buildozer cython kivy
+
+      - name: Build APK (debug)
+        run: |
+          buildozer android debug 2>&1 | tail -50
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: zionbrowser-debug-apk
+          path: bin/*.apk
+          retention-days: 30
+
+      - name: Build AAB (release)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          buildozer android release 2>&1 | tail -50
+        continue-on-error: true
+
+      - name: Upload AAB
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zionbrowser-release-aab
+          path: bin/*.aab
+          retention-days: 30
+          if-no-files-found: ignore

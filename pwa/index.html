@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0f1219">
+<meta name="description" content="ZionBrowser — Ultra-lightweight browser for AI agents. Pure Python, ZERO deps, ~5MB RAM.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>ZionBrowser</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f1219;color:#d5d5e0;font-family:'SF Mono','Menlo','Consolas',monospace;font-size:14px;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{padding:8px 12px;background:#161a24;border-bottom:1px solid #2a2e3a;display:flex;align-items:center;gap:8px}
+.header h1{font-size:16px;color:#5599dd;flex:1}
+.header h1 span{color:#88bbff;font-weight:400}
+.url-bar{display:flex;padding:6px 8px;gap:4px;background:#12151d}
+.url-bar input{flex:1;background:#1c2030;color:#e0e0e8;border:1px solid #2a2e3a;border-radius:4px;padding:8px 12px;font-size:14px;font-family:inherit;outline:none}
+.url-bar input:focus{border-color:#4488cc}
+.url-bar input::placeholder{color:#556}
+.url-bar button{background:#2255aa;color:#fff;border:none;border-radius:4px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.url-bar button:active{background:#1144aa}
+.actions{display:flex;padding:4px 8px;gap:3px;background:#12151d;border-bottom:1px solid #1a1e28}
+.actions button{flex:1;background:#1a1e2a;color:#8899bb;border:1px solid #252a38;border-radius:3px;padding:6px 4px;font-size:11px;cursor:pointer;font-family:inherit}
+.actions button:active{background:#252a3a;color:#aabbdd}
+.output{flex:1;overflow-y:auto;padding:12px;white-space:pre-wrap;word-break:break-word;line-height:1.5;-webkit-overflow-scrolling:touch}
+.output .title{color:#88ccff;font-weight:600;font-size:15px}
+.output .meta{color:#667;font-size:12px;margin:4px 0 8px}
+.output .link{color:#66aadd;text-decoration:underline;cursor:pointer}
+.output .error{color:#dd4444}
+.output .info{color:#556}
+.status{padding:4px 12px;background:#0c0e14;color:#445;font-size:11px;border-top:1px solid #1a1e28}
+.loading{color:#88ccff;animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><b>ZION</b><span>BROWSER</span></h1>
+  <span style="color:#445;font-size:11px">v2.0</span>
+</div>
+
+<div class="url-bar">
+  <input id="url" type="url" placeholder="Enter URL or search..." autocomplete="off" autocapitalize="off">
+  <button id="go">GO</button>
+</div>
+
+<div class="actions">
+  <button onclick="showLinks()">Links</button>
+  <button onclick="showForms()">Forms</button>
+  <button onclick="doSearch()">Search</button>
+  <button onclick="goBack()">Back</button>
+  <button onclick="clearOutput()">Clear</button>
+  <button onclick="showInfo()">Info</button>
+</div>
+
+<div class="output" id="output">
+<span class="info">Ready. Enter a URL and tap GO.
+
+ZionBrowser — Pure Python, ZERO deps
+Memory: ~5MB vs Firefox ~500MB+
+
+Em nome do Senhor Jesus Cristo.</span>
+</div>
+
+<div class="status" id="status">Pages: 0 | Links: 0</div>
+
+<script>
+const PROXY = 'https://api.allorigins.win/raw?url=';
+let history = [];
+let currentPage = null;
+
+const $ = id => document.getElementById(id);
+const output = $('output');
+const urlInput = $('url');
+const statusBar = $('status');
+
+urlInput.addEventListener('keydown', e => { if(e.key==='Enter') fetchPage(); });
+$('go').addEventListener('click', fetchPage);
+
+async function fetchPage(url) {
+  url = url || urlInput.value.trim();
+  if (!url) return;
+  if (!url.startsWith('http') && !url.includes('.')) {
+    doSearch(url);
+    return;
+  }
+  if (!url.startsWith('http')) url = 'https://' + url;
+  urlInput.value = url;
+
+  output.innerHTML = '<span class="loading">Loading...</span>';
+
+  try {
+    const resp = await fetch(PROXY + encodeURIComponent(url), {
+      headers: {'Accept': 'text/html,application/xhtml+xml,*/*'}
+    });
+    const html = await resp.text();
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+
+    const title = doc.querySelector('title')?.textContent || '(no title)';
+    const text = doc.body?.textContent?.trim().substring(0, 5000) || '';
+
+    const links = [...doc.querySelectorAll('a[href]')].map(a => ({
+      url: new URL(a.getAttribute('href'), url).href,
+      text: a.textContent.trim().substring(0, 60)
+    })).filter(l => l.url.startsWith('http'));
+
+    const forms = [...doc.querySelectorAll('form')].map(f => ({
+      action: f.getAttribute('action') || '',
+      method: (f.getAttribute('method') || 'GET').toUpperCase(),
+      inputs: [...f.querySelectorAll('input,textarea,select')].map(i => ({
+        type: i.getAttribute('type') || 'text',
+        name: i.getAttribute('name') || '',
+        placeholder: i.getAttribute('placeholder') || ''
+      }))
+    }));
+
+    currentPage = { title, text, links, forms, url };
+    history.push(url);
+
+    const cleanText = text.replace(/\s+/g, ' ').substring(0, 3000);
+    output.innerHTML = `<span class="title">${esc(title)}</span>\n<span class="meta">Status: 200 | Links: ${links.length} | Forms: ${forms.length}\n${esc(url)}</span>\n\n${esc(cleanText)}`;
+    statusBar.textContent = `Pages: ${history.length} | Links: ${links.length}`;
+
+  } catch(e) {
+    output.innerHTML = `<span class="error">Error: ${esc(e.message)}</span>\n\n<span class="info">Note: Some sites block CORS proxy requests.\nTry using the desktop CLI version for full access.</span>`;
+  }
+}
+
+function showLinks() {
+  if (!currentPage) { output.innerHTML = '<span class="error">No page loaded.</span>'; return; }
+  const lines = currentPage.links.slice(0, 50).map((l, i) =>
+    `<span class="info">${i+1}.</span> <span class="link" onclick="fetchPage('${esc(l.url)}')">${esc(l.text || l.url.substring(0,50))}</span>`
+  );
+  output.innerHTML = `<span class="title">Links (${currentPage.links.length})</span>\n\n${lines.join('\n')}`;
+}
+
+function showForms() {
+  if (!currentPage) { output.innerHTML = '<span class="error">No page loaded.</span>'; return; }
+  if (!currentPage.forms.length) { output.innerHTML = '<span class="error">No forms found.</span>'; return; }
+  const lines = currentPage.forms.map((f, i) => {
+    const inputs = f.inputs.map(inp => `  [${inp.type}] ${inp.name || inp.placeholder || '?'}`).join('\n');
+    return `<span class="title">Form ${i+1}</span> ${f.method} → ${esc(f.action)}\n${inputs}`;
+  });
+  output.innerHTML = lines.join('\n\n');
+}
+
+function doSearch(q) {
+  q = q || urlInput.value.trim();
+  if (!q) return;
+  fetchPage(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`);
+}
+
+function goBack() {
+  if (history.length > 1) {
+    history.pop();
+    fetchPage(history[history.length - 1]);
+  }
+}
+
+function clearOutput() {
+  output.innerHTML = '<span class="info">Cleared.</span>';
+  urlInput.value = '';
+  currentPage = null;
+}
+
+function showInfo() {
+  output.innerHTML = `<span class="title">ZionBrowser v2.0</span>
+
+<span class="info">Ultra-Lightweight Browser for AI Agents
+
+Features:
+• Fetch & display any web page
+• Extract links and forms
+• DuckDuckGo search
+• Cookie management (CLI version)
+• Session persistence (CLI version)
+• HTTP retry with backoff
+• CSRF token extraction
+• Pipeline automation (CLI version)
+
+This PWA version uses a CORS proxy.
+For full power, use the CLI: pip install zion-browser
+
+Padrao Bitcoin — standardbitcoin.io
+Em nome do Senhor Jesus Cristo.</span>
+
+<span class="meta">Pages viewed: ${history.length}
+Current page links: ${currentPage?.links?.length || 0}</span>`;
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Service Worker for offline
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>

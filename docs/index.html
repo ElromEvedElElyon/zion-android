@@ -70,22 +70,36 @@ Em nome do Senhor Jesus Cristo.</span>
 <div class="status" id="status">Pages: 0 | Links: 0</div>
 
 <script>
-const PROXY = 'https://api.allorigins.win/raw?url=';
-let history = [];
-let currentPage = null;
+var PROXIES = [
+  'https://api.allorigins.win/raw?url=',
+  'https://api.codetabs.com/v1/proxy?quest=',
+  'https://corsproxy.io/?url='
+];
+var currentProxy = 0;
+var navHistory = [];
+var currentPage = null;
 
-const $ = id => document.getElementById(id);
-const output = $('output');
-const urlInput = $('url');
-const statusBar = $('status');
+function $(id) { return document.getElementById(id); }
+var output = $('output');
+var urlInput = $('url');
+var statusBar = $('status');
 
-urlInput.addEventListener('keydown', e => { if(e.key==='Enter') fetchPage(); });
-$('go').addEventListener('click', fetchPage);
+urlInput.addEventListener('keydown', function(e) { if(e.key==='Enter') fetchPage(); });
+$('go').addEventListener('click', function() { fetchPage(); });
+
+async function tryFetchWithProxy(url, proxyIdx) {
+  var proxy = PROXIES[proxyIdx];
+  var resp = await fetch(proxy + encodeURIComponent(url), {
+    headers: {'Accept': 'text/html,application/xhtml+xml,*/*'}
+  });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.text();
+}
 
 async function fetchPage(url) {
   url = url || urlInput.value.trim();
   if (!url) return;
-  if (!url.startsWith('http') && !url.includes('.')) {
+  if (!url.startsWith('http') && url.indexOf('.') === -1) {
     doSearch(url);
     return;
   }
@@ -94,73 +108,117 @@ async function fetchPage(url) {
 
   output.innerHTML = '<span class="loading">Loading...</span>';
 
+  var html = null;
+  var lastErr = null;
+  for (var i = 0; i < PROXIES.length; i++) {
+    var idx = (currentProxy + i) % PROXIES.length;
+    try {
+      html = await tryFetchWithProxy(url, idx);
+      currentProxy = idx;
+      break;
+    } catch(e) {
+      lastErr = e;
+    }
+  }
+
+  if (!html) {
+    output.innerHTML = '<span class="error">Error: ' + esc(lastErr ? lastErr.message : 'All proxies failed') + '</span>\n\n<span class="info">All CORS proxies failed for this URL.\nSome sites block proxy requests.\nUse the desktop CLI version for full access:\n  pip install zion-browser</span>';
+    return;
+  }
+
   try {
-    const resp = await fetch(PROXY + encodeURIComponent(url), {
-      headers: {'Accept': 'text/html,application/xhtml+xml,*/*'}
-    });
-    const html = await resp.text();
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(html, 'text/html');
 
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
+    var titleEl = doc.querySelector('title');
+    var title = (titleEl && titleEl.textContent) ? titleEl.textContent : '(no title)';
+    var bodyText = doc.body ? doc.body.textContent : '';
+    var text = bodyText ? bodyText.trim().substring(0, 5000) : '';
 
-    const title = doc.querySelector('title')?.textContent || '(no title)';
-    const text = doc.body?.textContent?.trim().substring(0, 5000) || '';
+    var linkEls = doc.querySelectorAll('a[href]');
+    var links = [];
+    for (var j = 0; j < linkEls.length; j++) {
+      try {
+        var href = linkEls[j].getAttribute('href');
+        var resolved = new URL(href, url).href;
+        if (resolved.indexOf('http') === 0) {
+          links.push({
+            url: resolved,
+            text: linkEls[j].textContent.trim().substring(0, 60)
+          });
+        }
+      } catch(e) { /* skip bad URLs */ }
+    }
 
-    const links = [...doc.querySelectorAll('a[href]')].map(a => ({
-      url: new URL(a.getAttribute('href'), url).href,
-      text: a.textContent.trim().substring(0, 60)
-    })).filter(l => l.url.startsWith('http'));
+    var formEls = doc.querySelectorAll('form');
+    var forms = [];
+    for (var k = 0; k < formEls.length; k++) {
+      var f = formEls[k];
+      var inputEls = f.querySelectorAll('input,textarea,select');
+      var inputs = [];
+      for (var m = 0; m < inputEls.length; m++) {
+        inputs.push({
+          type: inputEls[m].getAttribute('type') || 'text',
+          name: inputEls[m].getAttribute('name') || '',
+          placeholder: inputEls[m].getAttribute('placeholder') || ''
+        });
+      }
+      forms.push({
+        action: f.getAttribute('action') || '',
+        method: (f.getAttribute('method') || 'GET').toUpperCase(),
+        inputs: inputs
+      });
+    }
 
-    const forms = [...doc.querySelectorAll('form')].map(f => ({
-      action: f.getAttribute('action') || '',
-      method: (f.getAttribute('method') || 'GET').toUpperCase(),
-      inputs: [...f.querySelectorAll('input,textarea,select')].map(i => ({
-        type: i.getAttribute('type') || 'text',
-        name: i.getAttribute('name') || '',
-        placeholder: i.getAttribute('placeholder') || ''
-      }))
-    }));
+    currentPage = { title: title, text: text, links: links, forms: forms, url: url };
+    navHistory.push(url);
 
-    currentPage = { title, text, links, forms, url };
-    history.push(url);
-
-    const cleanText = text.replace(/\s+/g, ' ').substring(0, 3000);
-    output.innerHTML = `<span class="title">${esc(title)}</span>\n<span class="meta">Status: 200 | Links: ${links.length} | Forms: ${forms.length}\n${esc(url)}</span>\n\n${esc(cleanText)}`;
-    statusBar.textContent = `Pages: ${history.length} | Links: ${links.length}`;
+    var cleanText = text.replace(/\s+/g, ' ').substring(0, 3000);
+    output.innerHTML = '<span class="title">' + esc(title) + '</span>\n<span class="meta">Status: 200 | Links: ' + links.length + ' | Forms: ' + forms.length + '\n' + esc(url) + '</span>\n\n' + esc(cleanText);
+    statusBar.textContent = 'Pages: ' + navHistory.length + ' | Links: ' + links.length;
 
   } catch(e) {
-    output.innerHTML = `<span class="error">Error: ${esc(e.message)}</span>\n\n<span class="info">Note: Some sites block CORS proxy requests.\nTry using the desktop CLI version for full access.</span>`;
+    output.innerHTML = '<span class="error">Parse error: ' + esc(e.message) + '</span>';
   }
 }
 
 function showLinks() {
   if (!currentPage) { output.innerHTML = '<span class="error">No page loaded.</span>'; return; }
-  const lines = currentPage.links.slice(0, 50).map((l, i) =>
-    `<span class="info">${i+1}.</span> <span class="link" onclick="fetchPage('${esc(l.url)}')">${esc(l.text || l.url.substring(0,50))}</span>`
-  );
-  output.innerHTML = `<span class="title">Links (${currentPage.links.length})</span>\n\n${lines.join('\n')}`;
+  var lines = [];
+  var max = Math.min(currentPage.links.length, 50);
+  for (var i = 0; i < max; i++) {
+    var l = currentPage.links[i];
+    lines.push('<span class="info">' + (i+1) + '.</span> <span class="link" onclick="fetchPage(\'' + esc(l.url).replace(/'/g, "\\'") + '\')">' + esc(l.text || l.url.substring(0,50)) + '</span>');
+  }
+  output.innerHTML = '<span class="title">Links (' + currentPage.links.length + ')</span>\n\n' + lines.join('\n');
 }
 
 function showForms() {
   if (!currentPage) { output.innerHTML = '<span class="error">No page loaded.</span>'; return; }
   if (!currentPage.forms.length) { output.innerHTML = '<span class="error">No forms found.</span>'; return; }
-  const lines = currentPage.forms.map((f, i) => {
-    const inputs = f.inputs.map(inp => `  [${inp.type}] ${inp.name || inp.placeholder || '?'}`).join('\n');
-    return `<span class="title">Form ${i+1}</span> ${f.method} → ${esc(f.action)}\n${inputs}`;
-  });
+  var lines = [];
+  for (var i = 0; i < currentPage.forms.length; i++) {
+    var f = currentPage.forms[i];
+    var inputLines = [];
+    for (var j = 0; j < f.inputs.length; j++) {
+      var inp = f.inputs[j];
+      inputLines.push('  [' + inp.type + '] ' + (inp.name || inp.placeholder || '?'));
+    }
+    lines.push('<span class="title">Form ' + (i+1) + '</span> ' + f.method + ' > ' + esc(f.action) + '\n' + inputLines.join('\n'));
+  }
   output.innerHTML = lines.join('\n\n');
 }
 
 function doSearch(q) {
   q = q || urlInput.value.trim();
   if (!q) return;
-  fetchPage(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`);
+  fetchPage('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q));
 }
 
 function goBack() {
-  if (history.length > 1) {
-    history.pop();
-    fetchPage(history[history.length - 1]);
+  if (navHistory.length > 1) {
+    navHistory.pop();
+    fetchPage(navHistory[navHistory.length - 1]);
   }
 }
 
@@ -171,28 +229,26 @@ function clearOutput() {
 }
 
 function showInfo() {
-  output.innerHTML = `<span class="title">ZionBrowser v2.0</span>
-
-<span class="info">Ultra-Lightweight Browser for AI Agents
-
-Features:
-• Fetch & display any web page
-• Extract links and forms
-• DuckDuckGo search
-• Cookie management (CLI version)
-• Session persistence (CLI version)
-• HTTP retry with backoff
-• CSRF token extraction
-• Pipeline automation (CLI version)
-
-This PWA version uses a CORS proxy.
-For full power, use the CLI: pip install zion-browser
-
-Padrao Bitcoin — standardbitcoin.io
-Em nome do Senhor Jesus Cristo.</span>
-
-<span class="meta">Pages viewed: ${history.length}
-Current page links: ${currentPage?.links?.length || 0}</span>`;
+  var pageCount = navHistory.length;
+  var linkCount = (currentPage && currentPage.links) ? currentPage.links.length : 0;
+  output.innerHTML = '<span class="title">ZionBrowser v2.0.1</span>\n\n' +
+    '<span class="info">Ultra-Lightweight Browser for AI Agents\n\n' +
+    'Features:\n' +
+    String.fromCharCode(8226) + ' Fetch & display any web page\n' +
+    String.fromCharCode(8226) + ' Multi-proxy CORS fallback (3 proxies)\n' +
+    String.fromCharCode(8226) + ' Extract links and forms\n' +
+    String.fromCharCode(8226) + ' DuckDuckGo search\n' +
+    String.fromCharCode(8226) + ' Cookie management (CLI version)\n' +
+    String.fromCharCode(8226) + ' Session persistence (CLI version)\n' +
+    String.fromCharCode(8226) + ' HTTP retry with backoff\n' +
+    String.fromCharCode(8226) + ' CSRF token extraction\n' +
+    String.fromCharCode(8226) + ' Pipeline automation (CLI version)\n\n' +
+    'Browser Support: Chrome 49+, Firefox 45+, Safari 10+, Edge 14+\n\n' +
+    'This PWA version uses CORS proxies with auto-fallback.\n' +
+    'For full power, use the CLI: pip install zion-browser\n\n' +
+    'Padrao Bitcoin \u2014 standardbitcoin.io\n' +
+    'Em nome do Senhor Jesus Cristo.</span>\n\n' +
+    '<span class="meta">Pages viewed: ' + pageCount + '\nCurrent page links: ' + linkCount + '</span>';
 }
 
 function esc(s) {
